@@ -551,5 +551,45 @@ async def export_dataset_excel(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not export the requested dataset.",
         ) from exc
+        
+        
+@router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dataset(
+    dataset_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    """Delete an owned dataset and its uploaded file."""
+    dataset = await _get_owned_dataset(
+        dataset_id=dataset_id,
+        user_id=current_user.id,
+        db=db,
+    )
+
+    file_path = _get_dataset_path(dataset.stored_filename)
+
+    try:
+        await db.delete(dataset)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        logger.exception(
+            "Failed to delete dataset_id=%s",
+            dataset_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not delete the dataset.",
+        ) from exc
+
+    try:
+        file_path.unlink(missing_ok=True)
+    except OSError:
+        logger.exception(
+            "Dataset %s was deleted, but its file could not be removed.",
+            dataset_id,
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

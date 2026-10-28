@@ -2030,3 +2030,37 @@ tbody tr.selected-row .row-open {
 .markdown-content { white-space: normal; }
 .schema-table-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .profile-json { max-height: 420px; overflow: auto; margin: 0; padding: 14px; border-radius: 8px; background: #fafaff; color: #5b5b73; font-size: 10px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Dataset deletion action */
+.dataset-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.delete-dataset-button {
+  color: #9a7180;
+  opacity: 0.65;
+}
+
+tbody tr:hover .delete-dataset-button,
+tbody tr.selected-row .delete-dataset-button {
+  opacity: 1;
+}
+
+.delete-dataset-button:hover:not(:disabled) {
+  color: #c24d62;
+  background: #fff0f2;
+}
+
+.delete-dataset-button:disabled {
+  cursor: wait;
+  opacity: 0.8;
+}
+
+.archived-chat-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

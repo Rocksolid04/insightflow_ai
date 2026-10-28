@@ -1,4 +1,3 @@
-
 import axios from "axios";
 
 const api = axios.create({
@@ -70,7 +69,6 @@ export interface AnalysisResponse {
   [key: string]: unknown;
 }
 
-
 export interface DatabaseConnection {
   id: number;
   name: string;
@@ -109,7 +107,16 @@ export interface DatabaseSchema {
   connection_id: number;
   connection_name: string;
   table_count: number;
-  tables: { schema: string; name: string; type: string; columns: { name: string; data_type: string; nullable: boolean }[] }[];
+  tables: {
+    schema: string;
+    name: string;
+    type: string;
+    columns: {
+      name: string;
+      data_type: string;
+      nullable: boolean;
+    }[];
+  }[];
 }
 
 export const apiClient = {
@@ -133,7 +140,10 @@ export const apiClient = {
       },
     });
 
-    return data as { access_token: string; token_type: string };
+    return data as {
+      access_token: string;
+      token_type: string;
+    };
   },
 
   async me() {
@@ -146,11 +156,17 @@ export const apiClient = {
     return data;
   },
 
+  // Delete a dataset owned by the authenticated user.
+  async deleteDataset(id: number): Promise<void> {
+    await api.delete(`/datasets/${id}`);
+  },
+
   async uploadDataset(file: File) {
     const form = new FormData();
     form.append("file", file);
 
     const { data } = await api.post("/datasets/upload", form);
+
     return data as {
       dataset_id: number;
       filename: string;
@@ -164,6 +180,7 @@ export const apiClient = {
     const { data } = await api.get<DatasetPreview>(
       `/datasets/${id}/preview`,
     );
+
     return data;
   },
 
@@ -171,6 +188,7 @@ export const apiClient = {
     const { data } = await api.get<DatasetProfile>(
       `/datasets/${id}/profile`,
     );
+
     return data;
   },
 
@@ -179,26 +197,50 @@ export const apiClient = {
       `/datasets/${id}/ask`,
       { question },
     );
+
     return data;
   },
 
   async generateDatasetReport(id: number) {
-    const { data } = await api.post<AnalysisResponse>(`/datasets/${id}/report`);
+    const { data } = await api.post<AnalysisResponse>(
+      `/datasets/${id}/report`,
+    );
+
     return data;
   },
 
   async listDatabaseConnections() {
-    const { data } = await api.get<DatabaseConnection[]>("/database-connections/");
+    const { data } = await api.get<DatabaseConnection[]>(
+      "/database-connections/",
+    );
+
     return data;
   },
 
-  async createDatabaseConnection(payload: { name: string; host: string; port: number; database_name: string; username: string; password: string }) {
-    const { data } = await api.post<DatabaseConnection>("/database-connections/", payload);
+  async createDatabaseConnection(payload: {
+    name: string;
+    host: string;
+    port: number;
+    database_name: string;
+    username: string;
+    password: string;
+  }) {
+    const { data } = await api.post<DatabaseConnection>(
+      "/database-connections/",
+      payload,
+    );
+
     return data;
   },
 
   async testDatabaseConnection(id: number) {
-    const { data } = await api.post<{ connection_id: number; success: boolean; message: string; tested_at: string }>(`/database-connections/${id}/test`);
+    const { data } = await api.post<{
+      connection_id: number;
+      success: boolean;
+      message: string;
+      tested_at: string;
+    }>(`/database-connections/${id}/test`);
+
     return data;
   },
 
@@ -207,36 +249,86 @@ export const apiClient = {
   },
 
   async getDatabaseSchema(id: number) {
-    const { data } = await api.get<DatabaseSchema>(`/database-connections/${id}/schema`);
+    const { data } = await api.get<DatabaseSchema>(
+      `/database-connections/${id}/schema`,
+    );
+
     return data;
   },
 
-  async previewDatabaseTable(id: number, schema: string, table: string) {
-    const { data } = await api.get(`/database-connections/${id}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/preview`);
-    return data as { schema: string; table: string; columns: string[]; rows: Record<string, unknown>[]; row_count?: number; data?: Record<string, unknown>[] };
+  async previewDatabaseTable(
+    id: number,
+    schema: string,
+    table: string,
+  ) {
+    const { data } = await api.get(
+      `/database-connections/${id}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/preview`,
+    );
+
+    return data as {
+      schema: string;
+      table: string;
+      columns: string[];
+      rows: Record<string, unknown>[];
+      row_count?: number;
+      data?: Record<string, unknown>[];
+    };
   },
 
-  async profileDatabaseTable(id: number, schema: string, table: string) {
-    const { data } = await api.get(`/database-connections/${id}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/profile`);
+  async profileDatabaseTable(
+    id: number,
+    schema: string,
+    table: string,
+  ) {
+    const { data } = await api.get(
+      `/database-connections/${id}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/profile`,
+    );
+
     return data as Record<string, unknown>;
   },
 
   async queryDatabase(id: number, query: string) {
-    const { data } = await api.post(`/database-connections/${id}/query`, { query });
-    return data as { columns?: string[]; rows?: Record<string, unknown>[]; data?: Record<string, unknown>[]; row_count?: number; truncated?: boolean };
+    const { data } = await api.post(
+      `/database-connections/${id}/query`,
+      { query },
+    );
+
+    return data as {
+      columns?: string[];
+      rows?: Record<string, unknown>[];
+      data?: Record<string, unknown>[];
+      row_count?: number;
+      truncated?: boolean;
+    };
   },
 
   async exportDatabaseQuery(id: number, sqlQuery: string) {
-    const { data, headers } = await api.post(`/database-connections/${id}/export/csv`, { sql_query: sqlQuery }, { responseType: "blob" });
+    const { data, headers } = await api.post(
+      `/database-connections/${id}/export/csv`,
+      { sql_query: sqlQuery },
+      { responseType: "blob" },
+    );
+
     const blobUrl = URL.createObjectURL(data);
     const link = document.createElement("a");
+
     link.href = blobUrl;
-    link.download = headers["content-disposition"]?.match(/filename="([^"]+)"/)?.[1] || `database_${id}_export.csv`;
-    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(blobUrl);
+    link.download =
+      headers["content-disposition"]?.match(/filename="([^"]+)"/)?.[1] ||
+      `database_${id}_export.csv`;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(blobUrl);
   },
 
   async askDatabase(id: number, question: string) {
-    const { data } = await api.post<AnalysisResponse>(`/database-connections/${id}/ask`, { query: question });
+    const { data } = await api.post<AnalysisResponse>(
+      `/database-connections/${id}/ask`,
+      { query: question },
+    );
+
     return data;
   },
 
@@ -246,22 +338,45 @@ export const apiClient = {
   },
 
   async getConversation(id: number) {
-    const { data } = await api.get<Conversation>(`/conversations/${id}`);
+    const { data } = await api.get<Conversation>(
+      `/conversations/${id}`,
+    );
+
     return data;
   },
 
-  async createConversation(payload: { title?: string; source_type: "dataset" | "database"; dataset_id?: number | null; connection_id?: number | null }) {
-    const { data } = await api.post<Conversation>("/conversations/", payload);
+  async createConversation(payload: {
+    title?: string;
+    source_type: "dataset" | "database";
+    dataset_id?: number | null;
+    connection_id?: number | null;
+  }) {
+    const { data } = await api.post<Conversation>(
+      "/conversations/",
+      payload,
+    );
+
     return data;
   },
 
-  async appendConversationMessage(id: number, message: ConversationMessage) {
-    const { data } = await api.post<Conversation>(`/conversations/${id}/messages`, message);
+  async appendConversationMessage(
+    id: number,
+    message: ConversationMessage,
+  ) {
+    const { data } = await api.post<Conversation>(
+      `/conversations/${id}/messages`,
+      message,
+    );
+
     return data;
   },
 
   async renameConversation(id: number, title: string) {
-    const { data } = await api.patch<Conversation>(`/conversations/${id}`, { title });
+    const { data } = await api.patch<Conversation>(
+      `/conversations/${id}`,
+      { title },
+    );
+
     return data;
   },
 
@@ -277,6 +392,7 @@ export const apiClient = {
 
     const blobUrl = URL.createObjectURL(data);
     const link = document.createElement("a");
+
     link.href = blobUrl;
     link.download =
       headers["content-disposition"]?.match(/filename="([^"]+)"/)?.[1] ||
@@ -314,5 +430,7 @@ export function getErrorMessage(error: unknown): string {
     return `Request failed (${error.response.status}).`;
   }
 
-  return error instanceof Error ? error.message : "Something went wrong.";
+  return error instanceof Error
+    ? error.message
+    : "Something went wrong.";
 }
