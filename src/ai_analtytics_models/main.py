@@ -1,6 +1,4 @@
-
 import os
-
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -34,26 +32,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Frontend (Vite) → Backend communication
-frontend_origins = [
+
+# Frontend origins allowed to communicate with this API.
+# Keep the production Cloudflare URL exactly as deployed.
+DEFAULT_FRONTEND_ORIGINS = {
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://insightflow-ai-data-analyst.pages.dev",
+}
+
+# Allow additional origins through Render environment variables.
+configured_origins = {
     origin.strip().rstrip("/")
     for origin in os.getenv("FRONTEND_ORIGINS", "").split(",")
     if origin.strip()
-]
+}
+
+allowed_origins = sorted(
+    DEFAULT_FRONTEND_ORIGINS | configured_origins
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        *frontend_origins,
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# API routers
+
+# Register API routers.
 app.include_router(users_router)
 app.include_router(datasets_router)
 app.include_router(database_connections_router)
