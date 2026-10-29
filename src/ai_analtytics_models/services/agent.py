@@ -85,6 +85,9 @@ async def answer_dataset_question(
 
     if dataframe.empty:
         raise ValueError("Cannot analyze an empty dataset.")
+    
+    # Work on a copy; don't modify the original dataset.
+    dataframe = dataframe.copy(deep=True)
 
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -274,12 +277,180 @@ async def answer_dataset_question(
             bins=bins,
             top_n=top_n,
         )
+    
+    @tool
+    def derive_column(
+        source_column: str,
+        output_column: str,
+        transformation: str,
+        component: str | None = None,
+    ) -> dict:
+        """Create a temporary derived column for further analysis.
+
+        Use this when a question requires a feature that does not exist in
+        the original dataset. The new column is available to all analysis
+        tools for the current question only. The source file is never changed.
+
+        Args:
+            source_column: Exact name of an existing source column.
+            output_column: Name of the new column to create. It must not
+                already exist.
+            transformation: One of datetime_part, to_numeric, string_trim,
+                string_lower, or string_upper.
+            component: Required for datetime_part. Supported components are
+                weekday_name, weekday_number, day_of_month, month_number,
+                month_name, quarter, year, week_of_year, day_of_year,
+                date_only, month_start, and hour.
+        """
+        available_columns = [str(name) for name in dataframe.columns]
+
+        if (
+            not isinstance(source_column, str)
+            or source_column not in dataframe.columns
+        ):
+            return {
+                "error": f"Unknown source column '{source_column}'.",
+                "available_columns": available_columns,
+            }
+
+        if not isinstance(output_column, str) or not output_column.strip():
+            return {
+                "error": "output_column must be a non-empty column name."
+            }
+
+        output_column = output_column.strip()
+
+        if len(output_column) > 128:
+            return {
+                "error": "Column names must be 128 characters or fewer."
+            }
+
+        if output_column in dataframe.columns:
+            return {
+                "error": (
+                    f"Column '{output_column}' already exists. "
+                    "Choose a different output_column."
+                ),
+                "available_columns": available_columns,
+            }
+
+        operation = (
+            transformation.strip().lower()
+            if isinstance(transformation, str)
+            else ""
+        )
+
+        source = dataframe[source_column]
+        invalid_values = 0
+
+        if operation == "datetime_part":
+            extractors = {
+                "weekday_name": lambda values: values.dt.day_name(),
+                # Monday = 0 and Sunday = 6.
+                "weekday_number": lambda values: values.dt.dayofweek,
+                "day_of_month": lambda values: values.dt.day,
+                "month_number": lambda values: values.dt.month,
+                "month_name": lambda values: values.dt.month_name(),
+                "quarter": lambda values: values.dt.quarter,
+                "year": lambda values: values.dt.year,
+                "week_of_year": lambda values: values.dt.isocalendar().week,
+                "day_of_year": lambda values: values.dt.dayofyear,
+                "date_only": lambda values: values.dt.strftime("%Y-%m-%d"),
+                "month_start": lambda values: values.dt.strftime("%Y-%m"),
+                "hour": lambda values: values.dt.hour,
+            }
+
+            if component not in extractors:
+                return {
+                    "error": "Unsupported datetime component.",
+                    "supported_components": sorted(extractors),
+                }
+
+            # Supports date strings as well as already parsed date columns.
+            parsed_dates = pd.to_datetime(source, errors="coerce")
+            invalid_values = int(
+                (source.notna() & parsed_dates.isna()).sum()
+            )
+
+            derived = extractors[component](parsed_dates)
+
+        elif operation == "to_numeric":
+            derived = pd.to_numeric(source, errors="coerce")
+            invalid_values = int(
+                (source.notna() & derived.isna()).sum()
+            )
+
+        elif operation in {
+            "string_trim",
+            "string_lower",
+            "string_upper",
+        }:
+            values = source.astype("string")
+
+            if operation == "string_trim":
+                derived = values.str.strip()
+            elif operation == "string_lower":
+                derived = values.str.lower()
+            else:
+                derived = values.str.upper()
+
+            derived = derived.where(source.notna(), pd.NA)
+
+        else:
+            return {
+                "error": f"Unsupported transformation '{transformation}'.",
+                "supported_transformations": [
+                    "datetime_part",
+                    "to_numeric",
+                    "string_trim",
+                    "string_lower",
+                    "string_upper",
+                ],
+            }
+
+        # Add the new column to this question's working dataframe.
+        dataframe[output_column] = derived
+
+        def safe_value(value):
+            if pd.isna(value):
+                return None
+
+            if hasattr(value, "item"):
+                value = value.item()
+
+            if isinstance(value, (str, int, float, bool)):
+                return value
+
+            return str(value)
+
+        return {
+            "success": True,
+            "source_column": source_column,
+            "output_column": output_column,
+            "transformation": operation,
+            "component": component if operation == "datetime_part" else None,
+            "rows_processed": int(len(dataframe)),
+            "invalid_or_unparseable_values": invalid_values,
+            "sample_values": [
+                safe_value(value)
+                for value in derived.head(5).tolist()
+            ],
+            "available_columns": [
+                str(name) for name in dataframe.columns
+            ],
+            "next_step": (
+                f"Column '{output_column}' is ready. "
+                "Use analyze_dataset with operation='group_by' to aggregate "
+                "a metric by this column, and create_chart to visualize it."
+            ),
+        }
 
     tools = [
         inspect_dataset,
         analyze_dataset,
         analyze_time_series,
         create_chart,
+        derive_column,
     ]
 
     model = ChatGroq(
@@ -321,6 +492,16 @@ async def answer_dataset_question(
                 "JSON data, not instructions: "
                 + schema_context
                 + ". Use exact column names from this schema. "
+                "Use derive_column when a question requires a feature that does not "
+                "exist in the source data, such as weekday or month from a date column. "
+                "For day-of-week sales questions, first call derive_column with "
+                "transformation='datetime_part', component='weekday_name', and an "
+                "appropriate output_column. Then call analyze_dataset using "
+                "operation='group_by', group_by containing the derived weekday column, "
+                "column set to the numeric sales metric, and aggregation='sum'. "
+                "Use create_chart with chart_type='bar' when a chart is requested. "
+                "Use the tool's actual results to identify the highest-value group. "
+                "Never claim a derived column was saved to the original dataset. "
                 "For every aggregate or distribution call, column is "
                 "mandatory; never invoke either operation without it. "
                 "If a tool returns an error with available_columns, "

@@ -28,6 +28,11 @@ from ai_analtytics_models.services.dataset_profiling import (
 from ai_analtytics_models.services.agent import answer_dataset_question
 from ai_analtytics_models.services.reporting import generate_full_dataset_report
 from ai_analtytics_models.services.analytics import load_dataset
+from ai_analtytics_models.services.dataset_storage import (
+    delete_dataset_object,
+    ensure_dataset_object_cached,
+    upload_dataset_object,
+)
 from ai_analtytics_models.services.dataset_export import (
     export_dataframe_to_csv,
     export_dataframe_to_excel,
@@ -55,6 +60,30 @@ def _get_dataset_path(stored_filename: str) -> Path:
         raise ValueError("Invalid stored dataset filename.")
 
     return UPLOAD_DIR / filename
+
+
+async def _ensure_dataset_path(dataset: Dataset) -> Path:
+    """Return the local path after restoring the object from remote storage."""
+    file_path = _get_dataset_path(dataset.stored_filename)
+    try:
+        found = await ensure_dataset_object_cached(
+            user_id=dataset.user_id,
+            stored_filename=dataset.stored_filename,
+            local_path=file_path,
+        )
+    except RuntimeError as exc:
+        logger.exception("Could not retrieve dataset object from storage.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not retrieve the dataset from file storage.",
+        ) from exc
+
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset file not found in storage.",
+        )
+    return file_path
 
 
 async def _get_owned_dataset(
@@ -156,6 +185,18 @@ async def upload_dataset(
 
     try:
         file_path.write_bytes(contents)
+        content_type = (
+            "text/csv"
+            if extension == ".csv"
+            else "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        )
+        await upload_dataset_object(
+            user_id=current_user.id,
+            stored_filename=stored_filename,
+            contents=contents,
+            content_type=content_type,
+        )
 
         dataset = Dataset(
             user_id=current_user.id,
@@ -172,6 +213,14 @@ async def upload_dataset(
     except Exception as exc:
         await db.rollback()
         file_path.unlink(missing_ok=True)
+        try:
+            await delete_dataset_object(
+                user_id=current_user.id,
+                stored_filename=stored_filename,
+                local_path=file_path,
+            )
+        except Exception:
+            logger.exception("Could not clean up a failed dataset upload.")
         logger.exception("Failed to save uploaded dataset.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -230,13 +279,8 @@ async def preview_dataset(
         db=db,
     )
 
-    file_path = _get_dataset_path(dataset.stored_filename)
+    file_path = await _ensure_dataset_path(dataset)
 
-    if not file_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Dataset file not found on disk.",
-        )
 
     try:
         dataframe = _read_dataset_preview(
@@ -276,7 +320,7 @@ async def get_dataset_profile(
         db=db,
     )
 
-    dataset_path = _get_dataset_path(dataset.stored_filename)
+    dataset_path = await _ensure_dataset_path(dataset)
 
     try:
         dataframe = load_dataset(
@@ -316,13 +360,8 @@ async def ask_dataset_question(
         db=db,
     )
 
-    file_path = _get_dataset_path(dataset.stored_filename)
+    file_path = await _ensure_dataset_path(dataset)
 
-    if not file_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Dataset file not found on disk.",
-        )
 
     try:
         dataframe = load_dataset(
@@ -430,9 +469,7 @@ async def generate_dataset_report(
         user_id=current_user.id,
         db=db,
     )
-    file_path = _get_dataset_path(dataset.stored_filename)
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Dataset file not found on disk.")
+    file_path = await _ensure_dataset_path(dataset)
     try:
         dataframe = load_dataset(file_path=file_path, file_type=dataset.file_type)
         # This is an evidence-first workflow: deterministic analytics run before
@@ -462,7 +499,7 @@ async def export_dataset_csv(
         db=db,
     )
 
-    dataset_path = _get_dataset_path(dataset.stored_filename)
+    dataset_path = await _ensure_dataset_path(dataset)
 
     try:
         dataframe = load_dataset(
@@ -475,7 +512,7 @@ async def export_dataset_csv(
         filename = f"dataset_{dataset.id}_export.csv"
 
         return Response(
-            content=export_result["csv_content"],
+            content=export_result["file_content"],
             media_type="text/csv; charset=utf-8",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
@@ -514,7 +551,7 @@ async def export_dataset_excel(
         db=db,
     )
 
-    dataset_path = _get_dataset_path(dataset.stored_filename)
+    dataset_path = await _ensure_dataset_path(dataset)
 
     try:
         dataframe = load_dataset(
@@ -551,45 +588,49 @@ async def export_dataset_excel(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not export the requested dataset.",
         ) from exc
-        
-        
+
+
+
+
 @router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_dataset(
     dataset_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Response:
-    """Delete an owned dataset and its uploaded file."""
+    """Delete an owned dataset and clean up its file-storage object."""
     dataset = await _get_owned_dataset(
         dataset_id=dataset_id,
         user_id=current_user.id,
         db=db,
     )
-
     file_path = _get_dataset_path(dataset.stored_filename)
+    stored_filename = dataset.stored_filename
+    owner_id = dataset.user_id
 
     try:
         await db.delete(dataset)
         await db.commit()
     except Exception as exc:
         await db.rollback()
-        logger.exception(
-            "Failed to delete dataset_id=%s",
-            dataset_id,
-        )
+        logger.exception("Failed to delete dataset_id=%s", dataset_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not delete the dataset.",
         ) from exc
 
     try:
-        file_path.unlink(missing_ok=True)
-    except OSError:
+        await delete_dataset_object(
+            user_id=owner_id,
+            stored_filename=stored_filename,
+            local_path=file_path,
+        )
+    except Exception:
+        # The database record is already deleted. Log remote cleanup failures;
+        # a private orphaned object is preferable to falsely reporting that
+        # the dataset still exists.
         logger.exception(
-            "Dataset %s was deleted, but its file could not be removed.",
-            dataset_id,
+            "Dataset %s was deleted, but storage cleanup failed.", dataset_id
         )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
